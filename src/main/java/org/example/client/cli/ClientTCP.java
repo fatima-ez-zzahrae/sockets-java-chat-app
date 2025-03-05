@@ -12,49 +12,54 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 public class ClientTCP {
-    private static final String ADRESSE_SERVEUR = "localhost";
+    private static final String SERVER_ADDRESS = "localhost";
     private static final int PORT = 5000;
     private static final ObjectMapper objectMapper = new ObjectMapper()
-        .registerModule(new JavaTimeModule());
+            .registerModule(new JavaTimeModule());
+    
     private static Socket socket;
-    private static PrintWriter envoyeur;
-    private static BufferedReader recepteur;
-    private static String currentUserEmail; // Store authenticated user's email
-  private static AtomicBoolean isRunning = new AtomicBoolean(true);
+    private static PrintWriter sender;
+    private static BufferedReader receiver;
+    private static String currentUserEmail;
+    private static final AtomicBoolean isRunning = new AtomicBoolean(true);
+
     public static void main(String[] args) {
         try {
-            // Initialize connection
-            socket = new Socket(ADRESSE_SERVEUR, PORT);
-            envoyeur = new PrintWriter(socket.getOutputStream(), true);
-            recepteur = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            initializeConnection();
             
-            // Get user credentials
             Scanner scanner = new Scanner(System.in);
-            System.out.println("\n🔐 Login");
-            System.out.println("─────────────────");
-            System.out.print("Email: ");
-            String email = scanner.nextLine();
-            System.out.print("Password: ");
-            String password = scanner.nextLine();
-
-            // Attempt authentication
-            if (authenticate(email, password)) {
-                System.out.println("\n✅ Authentication successful!");
-                currentUserEmail = email; // Store email for later use
-
-                // Start message listener thread
+            if (performLogin(scanner)) {
                 startMessageListener();
-
-                // Start main session
                 handleUserSession(scanner);
-            } else {
-                System.out.println("\n❌ Authentication failed!");
             }
-
         } catch (IOException e) {
-            System.out.println("❌ Connection error: " + e.getMessage());
+            System.err.println("❌ Connection error: " + e.getMessage());
         } finally {
             cleanup();
+        }
+    }
+
+    private static void initializeConnection() throws IOException {
+        socket = new Socket(SERVER_ADDRESS, PORT);
+        sender = new PrintWriter(socket.getOutputStream(), true);
+        receiver = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+    }
+
+    private static boolean performLogin(Scanner scanner) throws IOException {
+        System.out.println("\n🔐 Login");
+        System.out.println("─────────────────");
+        System.out.print("Email: ");
+        String email = scanner.nextLine();
+        System.out.print("Password: ");
+        String password = scanner.nextLine();
+
+        if (authenticate(email, password)) {
+            System.out.println("\n✅ Authentication successful!");
+            currentUserEmail = email;
+            return true;
+        } else {
+            System.out.println("\n❌ Authentication failed!");
+            return false;
         }
     }
 
@@ -62,7 +67,7 @@ public class ClientTCP {
         Thread messageListener = new Thread(() -> {
             try {
                 String incomingMessage;
-                while (isRunning.get() && (incomingMessage = recepteur.readLine()) != null) {
+                while (isRunning.get() && (incomingMessage = receiver.readLine()) != null) {
                     handleIncomingMessage(incomingMessage);
                 }
             } catch (IOException e) {
@@ -78,35 +83,32 @@ public class ClientTCP {
     private static void handleIncomingMessage(String jsonMessage) {
         try {
             Message message = objectMapper.readValue(jsonMessage, Message.class);
-            switch (message.getType()) {
-                case "CHAT":
-                    System.out.println("\n📨 Message from " + message.getSenderEmail() + ":");
-                    System.out.println("   " + message.getContent());
-                    printPrompt();
-                    break;
-                case "CONFIRMATION":
-                    String status = message.getStatus();
-                    if ("delivered".equals(status)) {
-                        System.out.println("\n✓ Message delivered");
-                    } else if ("queued".equals(status)) {
-                        System.out.println("\n⏳ Message queued (recipient offline)");
-                    }
-                    printPrompt();
-                    break;
-                case "ERROR":
-                    System.out.println("\n❌ Error: " + message.getContent());
-                    printPrompt();
-                    break;
-                case "LOGOUT_CONFIRM":
-                    isRunning.set(false);
-                    break;
-            }
+            processMessage(message);
         } catch (IOException e) {
-            System.out.println("\n❌ Error processing message: " + e.getMessage());
+            System.err.println("\n❌ Error processing message: " + e.getMessage());
             printPrompt();
         }
     }
 
+    private static void processMessage(Message message) {
+        switch (message.getType()) {
+            case "CHAT":
+                System.out.println("\n📨 Message from " + message.getSenderEmail() + ":");
+                System.out.println("   " + message.getContent());
+                break;
+            case "CONFIRMATION":
+                System.out.println(message.getStatus().equals("delivered") ? 
+                    "\n✓ Message delivered" : "\n⏳ Message queued (recipient offline)");
+                break;
+            case "ERROR":
+                System.out.println("\n❌ Error: " + message.getContent());
+                break;
+            case "LOGOUT_CONFIRM":
+                isRunning.set(false);
+                return;
+        }
+        printPrompt();
+    }
 
     private static void handleUserSession(Scanner scanner) {
         while (isRunning.get()) {
@@ -143,26 +145,18 @@ public class ClientTCP {
             Message message = new Message(currentUserEmail, receiverEmail, content);
             message.setType("CHAT");
             
-            String jsonMessage = objectMapper.writeValueAsString(message);
-            envoyeur.println(jsonMessage);
+            sender.println(objectMapper.writeValueAsString(message));
             System.out.println("\n📤 Sending message...");
             
         } catch (IOException e) {
-            System.out.println("\n❌ Error sending message: " + e.getMessage());
+            System.err.println("\n❌ Error sending message: " + e.getMessage());
         }
     }
 
-   
     private static boolean authenticate(String email, String password) throws IOException {
-        // Create credentials object
         Credentials credentials = new Credentials(email, password);
-        
-        // Convert to JSON and send
-        String jsonCredentials = objectMapper.writeValueAsString(credentials);
-        envoyeur.println(jsonCredentials);
-        
-        // Wait for server response
-        String response = recepteur.readLine();
+        sender.println(objectMapper.writeValueAsString(credentials));
+        String response = receiver.readLine();
         return "AUTH_SUCCESS".equals(response);
     }
 
@@ -170,10 +164,10 @@ public class ClientTCP {
         try {
             Message logoutMsg = new Message(currentUserEmail, null, null);
             logoutMsg.setType("LOGOUT");
-            envoyeur.println(objectMapper.writeValueAsString(logoutMsg));
+            sender.println(objectMapper.writeValueAsString(logoutMsg));
             System.out.println("\n👋 Logging out...");
         } catch (IOException e) {
-            System.out.println("\n❌ Error during logout: " + e.getMessage());
+            System.err.println("\n❌ Error during logout: " + e.getMessage());
         }
     }
 
@@ -184,7 +178,7 @@ public class ClientTCP {
                 socket.close();
             }
         } catch (IOException e) {
-            System.out.println("Error during cleanup: " + e.getMessage());
+            System.err.println("Error during cleanup: " + e.getMessage());
         }
     }
 

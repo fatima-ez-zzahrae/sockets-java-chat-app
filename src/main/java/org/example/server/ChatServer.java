@@ -2,27 +2,55 @@ package org.example.server;
 
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import org.example.broker.MessageBroker;
 
 public class ChatServer {
     private static final int PORT = 5000;
-    public static void main(final String[] args) throws Exception {
-        // Initialiser le Message Broker
-        MessageBroker.getInstance(); // Précharge les messages non lus
-        
+    private static final int MAX_THREADS = 50;
+    private static final ExecutorService threadPool = Executors.newFixedThreadPool(MAX_THREADS);
+    private static volatile boolean isRunning = true;
+
+    public static void main(final String[] args) {
+        try {
+            initializeServer();
+            startServer();
+        } catch (Exception e) {
+            System.err.println("Server error: " + e.getMessage());
+            shutdown();
+        }
+    }
+
+    private static void initializeServer() {
+        MessageBroker.getInstance(); // Initialize message broker
         System.out.println("Message Broker initialized");
         
-        final ServerSocket server = new ServerSocket(PORT);
-        System.out.println("Server started on port " + PORT);
-        System.out.println("Waiting for clients...");
+        Runtime.getRuntime().addShutdownHook(new Thread(ChatServer::shutdown));
+    }
 
-        while (true) {
-            final Socket client = server.accept();
-            // Create a new handler for this client
-            final ClientHandler clientHandler = new ClientHandler(client);
-            // Start the handler in a new thread
-            new Thread(clientHandler).start();
+    private static void startServer() throws Exception {
+        try (ServerSocket server = new ServerSocket(PORT)) {
+            System.out.println("Server started on port " + PORT);
+            System.out.println("Waiting for clients...");
+
+            while (isRunning) {
+                try {
+                    Socket client = server.accept();
+                    threadPool.execute(new ClientHandler(client));
+                } catch (Exception e) {
+                    if (isRunning) {
+                        System.err.println("Error accepting client connection: " + e.getMessage());
+                    }
+                }
+            }
         }
+    }
+
+    private static void shutdown() {
+        System.out.println("Shutting down server...");
+        isRunning = false;
+        threadPool.shutdown();
     }
 }
